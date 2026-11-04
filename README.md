@@ -32,7 +32,7 @@ Everything is in `CONFIG` at the top of `js/scene.js`:
 | `smoothing` | lower = floatier scroll |
 | `seed` | change it for a different random arrangement |
 
-The scroll distance itself is `--walk-length` in `css/style.css` (800vh on desktop, 650vh on phones).
+The scroll distance itself is `--walk-length` in `css/style.css` (520vh on desktop, 430vh on phones; one screen of that is the scene itself). When the walk ends, the page glides on into the gallery by itself: see `carryToGallery` in `scene.js`.
 
 You can also tune it live in the browser console:
 ```js
