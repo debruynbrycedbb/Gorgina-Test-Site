@@ -1,10 +1,16 @@
 /* ==========================================================
    Scroll-walk scene
    ----------------------------------------------------------
-   Every tree and bush has a real position along the path (metres).
-   Scrolling moves the camera forward; each cut-out is projected with
-   simple perspective, so near ones grow fast and slide off the sides
-   while far ones barely move. All drawn on one <canvas>.
+   Every tree and bush has a real position in a small 3D world
+   (metres). Scrolling moves the camera forward along the path.
+
+   - The ground is drawn row by row in true perspective from a
+     top-down texture (ground.webp), so it moves at exactly the same
+     speed as everything standing on it — trees stay rooted.
+   - Trees and bushes are 2D cut-outs projected with the same
+     camera: near ones grow and slide off the sides, far ones fade
+     into warm haze.
+   - The backdrop (sky, canopy, light) sits behind it all.
 
    Tune the walk with CONFIG below.
    ========================================================== */
@@ -22,22 +28,29 @@
   const CONFIG = {
     walkLength: 64,      // metres walked between the top of the page and the light
     walkShare: 0.8,      // share of the scroll spent walking; the rest is arriving in the light
-    eyeHeight: 1.6,      // camera height in metres (higher = ground rushes past faster)
-    backdropZoom: 0.4,   // how much the background zooms in while walking (0.4 = +40%)
-    arrivalZoom: 2.6,    // extra zoom into the light at the end
+    eyeHeight: 1.6,      // camera height in metres — must match tools/make_ground.py
+    backdropZoom: 0.15,  // how much the distant backdrop drifts closer while walking
+    arrivalZoom: 2.6,    // zoom into the light at the end
     smoothing: 0.09,     // 0–1, lower = floatier scroll
 
     // Where the path disappears in backdrop.webp (fraction of width / height)
     vanishing: { x: 1066 / 1672, y: 545 / 941 },
     horizonOnScreen: 0.56, // where the horizon sits on screen (fraction of height)
 
-    // Path edges in metres (negative = left of the camera)
-    pathLeft: -3.1,
-    pathRight: 2.1,
+    // Dirt path edges in metres (negative = left). Baked into ground.webp —
+    // change both together (tools/make_ground.py PATH_L / PATH_R).
+    pathLeft: -3.0,
+    pathRight: 2.0,
 
-    trees: { every: 3.6, height: [7.5, 10.5], setBack: [0.5, 2.6], backRow: 0.45 },
-    bushes: { every: 2.4, width: [2.4, 4.4], setBack: [-0.3, 1.0] },
-    fade: { from: 52, to: 70 }, // cut-outs fade in from the haze between these distances
+    // Row of trees lining the path
+    trees: { every: 3.6, height: [7.5, 10.5], setBack: [0.7, 2.4] },
+    // The wood behind them
+    forest: { depth: 15, cell: 3.2, density: 0.8, height: [8, 12.5] },
+    bushes: { every: 2.4, width: [2.4, 4.4], setBack: [-0.3, 1.0], forestChance: 0.15 },
+
+    ground: { file: 'ground.webp', pxPerMetre: 96, xMin: -24, z0: 3.85, fadeFrom: 26, fadeTo: 40 },
+    haze: { from: 12, to: 46, colour: 'rgba(236, 150, 62, 0.62)' }, // distant trees warm up and soften
+    fade: { from: 46, to: 62 },  // cut-outs appear out of the haze between these distances
     seed: 11,
   };
 
@@ -54,6 +67,7 @@
   ];
   const BUSHES = ['bush-1.webp', 'bush-2.webp', 'bush-3.webp', 'bush-4.webp'].map(file => ({ file }));
   const BACKDROP = { file: 'backdrop.webp' };
+  const GROUND = { file: CONFIG.ground.file };
 
   // Phones get lighter cut-outs (55% size) — the painterly style hides the softness
   const small = window.innerWidth < 900;
@@ -62,8 +76,38 @@
     img.decoding = 'async';
     img.onload = () => (img.decode ? img.decode().catch(() => {}) : Promise.resolve()).then(() => { a.img = img; res(); });
     img.onerror = () => res(); // a missing layer shouldn't break the page
-    img.src = SRC + (small && a !== BACKDROP ? a.file.replace('.webp', '-sm.webp') : a.file);
+    const sized = small && (TREES.includes(a) || BUSHES.includes(a));
+    img.src = SRC + (sized ? a.file.replace('.webp', '-sm.webp') : a.file);
   });
+
+  // A hazy copy of each cut-out, used for distant trees (aerial perspective)
+  function makeHaze(a) {
+    const c = document.createElement('canvas');
+    c.width = a.img.naturalWidth; c.height = a.img.naturalHeight;
+    const g = c.getContext('2d');
+    g.drawImage(a.img, 0, 0);
+    g.globalCompositeOperation = 'source-atop';
+    g.fillStyle = CONFIG.haze.colour;
+    g.fillRect(0, 0, c.width, c.height);
+    a.haze = c;
+  }
+
+  // Ground texture + smaller copies for far-away rows (stops shimmering)
+  function makeMips() {
+    const levels = [GROUND.img];
+    let prev = GROUND.img;
+    for (let i = 1; i < 5; i++) {
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(prev.width / 2));
+      c.height = Math.max(1, Math.round(prev.height / 2));
+      const g = c.getContext('2d');
+      g.imageSmoothingQuality = 'high';
+      g.drawImage(prev, 0, 0, c.width, c.height);
+      levels.push(c);
+      prev = c;
+    }
+    GROUND.levels = levels;
+  }
 
   /* ---------- build the world (deterministic) ---------- */
   let seed = CONFIG.seed;
@@ -73,26 +117,41 @@
 
   const sprites = [];
   const farthest = CONFIG.walkLength + CONFIG.fade.to + 10;
+  const edgeOf = s => (s < 0 ? CONFIG.pathLeft : CONFIG.pathRight);
 
-  // Trees: alternate sides with jitter; canopies lean over the path.
+  // 1. Trees lining the path: alternate sides with jitter, canopies lean over the path
   let side = -1;
   for (let z = 5; z < farthest; z += CONFIG.trees.every * (0.75 + rand() * 0.5)) {
     side = rand() < 0.8 ? -side : side;
-    const edge = side < 0 ? CONFIG.pathLeft : CONFIG.pathRight;
-    const t = pick(TREES);
-    sprites.push({ kind: 'tree', a: t, z, x: edge + side * between(CONFIG.trees.setBack), h: between(CONFIG.trees.height), flip: side > 0 });
-    if (rand() < CONFIG.trees.backRow) { // second row deeper in the woods
-      const t2 = pick(TREES);
-      sprites.push({ kind: 'tree', a: t2, z: z + 1 + rand() * 2, x: edge + side * (3.5 + rand() * 4), h: between(CONFIG.trees.height) * 1.05, flip: side > 0 });
+    sprites.push({ kind: 'tree', a: pick(TREES), z, x: edgeOf(side) + side * between(CONFIG.trees.setBack), h: between(CONFIG.trees.height), flip: side > 0 });
+  }
+
+  // 2. The wood: a jittered grid of trees filling both sides
+  const F = CONFIG.forest;
+  for (const s of [-1, 1]) {
+    const inner = Math.abs(edgeOf(s)) + CONFIG.trees.setBack[1] + 0.8;
+    for (let gx = 0; gx * F.cell < F.depth; gx++) {
+      for (let gz = 0; gz * F.cell < farthest; gz++) {
+        // a little thinner far from the path so the backdrop still glows through
+        if (rand() > F.density - gx * 0.02) continue;
+        const ax = inner + (gx + rand()) * F.cell;
+        const z = 1 + (gz + rand()) * F.cell;
+        // lod: 1 = dropped first if the device struggles
+        sprites.push({ kind: 'tree', a: pick(TREES), z, x: s * ax, h: between(F.height), flip: rand() < 0.5, lod: gx > 0 && rand() < 0.5 ? 1 : 0 });
+        if (rand() < CONFIG.bushes.forestChance) {
+          const w = between(CONFIG.bushes.width);
+          sprites.push({ kind: 'bush', a: pick(BUSHES), z: z - 0.6 - rand(), x: s * (ax + (rand() - 0.5) * 2), w, flip: rand() < 0.5, lod: 1 });
+        }
+      }
     }
   }
-  // Bushes along both verges
-  for (let z = 3; z < farthest; z += CONFIG.bushes.every * (0.7 + rand() * 0.6)) {
+
+  // 3. Bushes along both verges
+  for (let z = 2; z < farthest; z += CONFIG.bushes.every * (0.7 + rand() * 0.6)) {
     for (const s of [-1, 1]) {
       if (rand() < 0.3) continue;
-      const edge = s < 0 ? CONFIG.pathLeft : CONFIG.pathRight;
       const w = between(CONFIG.bushes.width);
-      sprites.push({ kind: 'bush', a: pick(BUSHES), z: z + rand() * 1.2, x: edge + s * (w * 0.42 + between(CONFIG.bushes.setBack)), w, flip: rand() < 0.5 });
+      sprites.push({ kind: 'bush', a: pick(BUSHES), z: z + rand() * 1.2, x: edgeOf(s) + s * (w * 0.42 + between(CONFIG.bushes.setBack)), w, flip: rand() < 0.5 });
     }
   }
   sprites.sort((p, q) => q.z - p.z); // far first (painter's algorithm)
@@ -105,13 +164,15 @@
   const intro = document.querySelector('.intro');
 
   let W = 0, H = 0, dpr = 1;
+  // Quality steps down automatically on slow devices: 0 = full, 1 = 1x pixels, 2 = also thinner forest
+  let quality = 0, slowFrames = 0;
   let base = 1, cx = 0, horizonY = 0, focal = 0, xSquash = 1;
 
   function layout() {
     const r = canvas.getBoundingClientRect();
     W = r.width; H = r.height;
     // cap the pixel count so big retina screens stay smooth
-    dpr = Math.min(window.devicePixelRatio || 1, 2, Math.sqrt(4.2e6 / (W * H)));
+    dpr = quality > 0 ? 1 : Math.min(window.devicePixelRatio || 1, 2, Math.sqrt(4.2e6 / (W * H)));
     canvas.width = Math.round(W * dpr);
     canvas.height = Math.round(H * dpr);
 
@@ -123,8 +184,8 @@
     cx = W / 2;
     const top = Math.min(0, Math.max(H - bh * base, H * CONFIG.horizonOnScreen - vy * bh * base));
     horizonY = top + vy * bh * base;
-    focal = bh * base;                              // px per metre at 1 m distance
-    xSquash = Math.min(1, Math.max(0.5, (W / H) / 1.5)); // pull trees inward on tall phones
+    focal = bh * base;                                   // px per metre at 1 m distance
+    xSquash = Math.min(1, Math.max(0.5, (W / H) / 1.5)); // pull the sides inward on tall phones
   }
 
   /* ---------- scroll state ---------- */
@@ -139,55 +200,87 @@
     target = total > 0 ? clamp01(-r.top / total) : 0;
   }
 
+  /* ---------- ground (perspective floor) ---------- */
+  function drawGround(camZ, f) {
+    const G = CONFIG.ground, lv = GROUND.levels;
+    if (!lv) return;
+    const texW = lv[0].width, texH = lv[0].height;
+    const eye = CONFIG.eyeHeight;
+    const yStart = Math.ceil(horizonY + (eye * f) / G.fadeTo);
+    for (let y = yStart, step = 1; y < H; y += step) {
+      step = y - horizonY > 220 ? 2 : 1;           // near ground changes slowly: 2px rows
+      const dy = y + step / 2 - horizonY;
+      const Z = (eye * f) / dy;                      // distance to this strip of ground
+      const mPerPx = Z / (f * xSquash);              // metres per screen px across
+      const texPerPx = Math.max(mPerPx, (eye * f) / (dy * dy) * step) * G.pxPerMetre / dpr;
+      const level = Math.min(lv.length - 1, Math.max(0, Math.floor(Math.log2(texPerPx))));
+      const tex = lv[level], k = tex.width / texW;
+
+      let v = ((Z + camZ - G.z0) * G.pxPerMetre) % texH;
+      if (v < 0) v += texH;
+      const u0 = ((-cx * mPerPx) - G.xMin) * G.pxPerMetre;
+      const uw = W * mPerPx * G.pxPerMetre;
+      // clip to the texture's width
+      const a = Math.max(0, u0), b = Math.min(texW, u0 + uw);
+      if (b <= a) continue;
+      const dx = ((a - u0) / uw) * W, dw = ((b - a) / uw) * W;
+
+      ctx.globalAlpha = clamp01((G.fadeTo - Z) / (G.fadeTo - G.fadeFrom));
+      const rowTex = Math.max(0.5, (eye * f) / (dy * dy) * step * G.pxPerMetre) * k;
+      ctx.drawImage(tex, a * k, Math.min(v * k, tex.height - rowTex), (b - a) * k, rowTex, dx, y, dw, step + 0.02);
+    }
+    ctx.globalAlpha = 1;
+  }
+
   /* ---------- render ---------- */
   function render(p) {
     const walk = clamp01(p / CONFIG.walkShare);
     const arrive = clamp01((p - CONFIG.walkShare * 0.95) / (1 - CONFIG.walkShare * 0.95));
     const camZ = CONFIG.walkLength * walk;
-    const zoom = (1 + CONFIG.backdropZoom * walk) * (1 + CONFIG.arrivalZoom * arrive * arrive);
+    const arrival = 1 + CONFIG.arrivalZoom * arrive * arrive;
+    const f = focal * arrival;   // one focal length for ground and cut-outs = rooted trees
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = true;
 
-    // 1. Backdrop, zoomed around the vanishing point
+    // 1. Backdrop (distant sky, canopy and light), drifting closer slowly
     if (BACKDROP.img) {
-      const s = base * zoom, iw = BACKDROP.img.naturalWidth, ih = BACKDROP.img.naturalHeight;
+      const s = base * (1 + CONFIG.backdropZoom * walk) * arrival;
+      const iw = BACKDROP.img.naturalWidth, ih = BACKDROP.img.naturalHeight;
       ctx.drawImage(BACKDROP.img, cx - CONFIG.vanishing.x * iw * s, horizonY - CONFIG.vanishing.y * ih * s, iw * s, ih * s);
     }
 
-    // 2. Cut-outs in perspective
+    // 2. Ground
+    drawGround(camZ, f);
+
+    // 3. Cut-outs in perspective, far to near
+    const Hz = CONFIG.haze;
     for (const sp of sprites) {
       const img = sp.a.img;
-      if (!img) continue;
-      const d = (sp.z - camZ) / zoom;          // effective distance
-      if (d < 0.25) continue;                    // behind us
+      if (!img || (quality > 1 && sp.lod)) continue;
+      const d = sp.z - camZ;                       // distance ahead of the camera
+      if (d < 0.3) continue;                       // behind us
       const fade = clamp01((CONFIG.fade.to - d) / (CONFIG.fade.to - CONFIG.fade.from));
       if (fade <= 0) continue;
-      const k = focal / d;                       // px per metre
+      const k = f / d;                             // px per metre at that distance
       const gx = cx + sp.x * k * xSquash;
-      const gy = horizonY + CONFIG.eyeHeight * k;
+      const gy = horizonY + CONFIG.eyeHeight * k;  // where it meets the ground
       const iw = img.naturalWidth, ih = img.naturalHeight;
       let w, h, anchor;
       if (sp.kind === 'tree') { h = sp.h * k; w = h * iw / ih; anchor = sp.a.trunkX; }
       else { w = sp.w * k; h = w * ih / iw; anchor = 0.5; }
       if (sp.flip) anchor = 1 - anchor;
       const left = gx - anchor * w;
-      const topY = gy - h * (sp.kind === 'tree' ? 0.985 : 0.94); // sink slightly into the ground
-      if (left > W || left + w < 0 || topY > H) continue; // off screen
+      const topY = gy - h * (sp.kind === 'tree' ? 0.985 : 0.94); // roots sink slightly into the ground
+      if (left > W || left + w < 0 || topY > H) continue;        // off screen
 
-      ctx.globalAlpha = fade;
-      if (sp.flip) {
-        ctx.save();
-        ctx.translate(left + w, topY);
-        ctx.scale(-1, 1);
-        ctx.drawImage(img, 0, 0, w, h);
-        ctx.restore();
-      } else {
-        ctx.drawImage(img, left, topY, w, h);
-      }
+      const haze = sp.a.haze ? clamp01((d - Hz.from) / (Hz.to - Hz.from)) : 0;
+      if (haze > 0.02) blit(sp.a.haze, left, topY, w, h, sp.flip, fade);
+      if (haze < 0.98) blit(img, left, topY, w, h, sp.flip, fade * (1 - haze));
     }
     ctx.globalAlpha = 1;
 
-    // 3. Warm light at the end of the path, swelling into the gallery
+    // 4. Warm light at the end of the path, swelling into the gallery
     const glowR = Math.hypot(W, H) * (0.12 + 0.18 * walk + 1.3 * arrive);
     const g = ctx.createRadialGradient(cx, horizonY - 10, 0, cx, horizonY - 10, glowR);
     const a0 = 0.18 + 0.25 * walk + 0.57 * arrive;
@@ -210,22 +303,46 @@
     root.classList.toggle('is-arrived', wash > 0.6 || p >= 1);
   }
 
+  function blit(img, x, y, w, h, flip, alpha) {
+    ctx.globalAlpha = alpha;
+    if (flip) {
+      ctx.save();
+      ctx.translate(x + w, y);
+      ctx.scale(-1, 1);
+      ctx.drawImage(img, 0, 0, w, h);
+      ctx.restore();
+    } else {
+      ctx.drawImage(img, x, y, w, h);
+    }
+  }
+
   function tick() {
     current += (target - current) * CONFIG.smoothing;
     if (Math.abs(target - current) < 0.00005) current = target;
+    const t0 = performance.now();
     render(current);
+    adapt(performance.now() - t0);
     raf = current !== target ? requestAnimationFrame(tick) : 0;
+  }
+  // If frames keep taking too long, step quality down (once per step)
+  function adapt(ms) {
+    if (quality >= 2 || !root.classList.contains('is-ready')) return;
+    slowFrames = ms > 20 ? slowFrames + 1 : Math.max(0, slowFrames - 1);
+    if (slowFrames > 12) { quality++; slowFrames = 0; layout(); }
   }
   const kick = () => { if (!raf) raf = requestAnimationFrame(tick); };
 
   function onScroll() { readScroll(); kick(); }
   function onResize() { layout(); readScroll(); render(current); }
 
-  // Show the backdrop first, then bring in the cut-outs once loaded
-  load(BACKDROP).then(() => {
+  // Backdrop + ground first, then the cut-outs
+  Promise.all([load(BACKDROP), load(GROUND)]).then(() => {
+    if (GROUND.img) makeMips();
     layout(); readScroll(); current = target; render(current);
     return Promise.all([...TREES, ...BUSHES].map(load));
   }).then(() => {
+    TREES.forEach(t => t.img && makeHaze(t));
+    BUSHES.forEach(b => b.img && makeHaze(b));
     root.classList.add('is-ready');
     render(current);
   });
@@ -234,5 +351,5 @@
   addEventListener('resize', onResize);
 
   // Expose for tuning in the console: e.g. walkScene.config.walkLength = 80; walkScene.redraw()
-  window.walkScene = { config: CONFIG, redraw: () => { layout(); render(current); } };
+  window.walkScene = { config: CONFIG, sprites, redraw: () => { layout(); render(current); }, renderAt: render, get quality() { return quality; } };
 })();
