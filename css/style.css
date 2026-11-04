@@ -22,11 +22,11 @@
   --step-5: clamp(3.2rem, 9vw, 6.6rem);
 
   --gutter: clamp(16px, 4vw, 48px);
-  --walk-length: 800vh;  /* how much scrolling the walk takes */
+  --walk-length: 520vh;  /* scroll length of the walk (incl. one screen for the scene itself) */
 }
 
 *, *::before, *::after { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
+html { -webkit-text-size-adjust: 100%; overscroll-behavior-y: none; } /* no rubber-band gaps */
 @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
 body {
   margin: 0;
@@ -76,7 +76,8 @@ a { color: inherit; }
 .journey { position: relative; height: var(--walk-length); background: var(--cream); }
 .stage {
   position: sticky; top: 0;
-  height: 100vh; height: 100svh;
+  /* large viewport height: stays full-screen when the phone's address bar collapses */
+  height: 100vh; height: 100lvh;
   overflow: hidden;
   background: #e9a443 url("../assets/scene/backdrop.webp") center 60% / cover no-repeat;
 }
@@ -206,7 +207,7 @@ a { color: inherit; }
 .lb-next { right: 14px; top: 50%; translate: 0 -50%; }
 
 @media (max-width: 640px) {
-  :root { --walk-length: 650vh; }
+  :root { --walk-length: 430vh; }
   .lightbox figure { padding: 64px 12px 84px; }
   .lb-prev, .lb-next { top: auto; bottom: 14px; translate: none; }
   .lb-prev { left: calc(50% - 60px); }
@@ -215,4 +216,11 @@ a { color: inherit; }
 
 @media (prefers-reduced-motion: reduce) {
   .artwork, .gallery-grid li { transition: none; }
+}
+
+/* Keep bottom UI above the phone's toolbar while it's showing
+   (the stage is the large viewport, so its bottom can sit behind the toolbar) */
+@supports (height: 100dvh) {
+  .intro { padding-bottom: calc(clamp(36px, 8vh, 72px) + 100lvh - 100dvh); }
+  .progress { bottom: calc(18px + 100lvh - 100dvh); }
 }

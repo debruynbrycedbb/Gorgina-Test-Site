@@ -170,9 +170,11 @@
 
   function layout() {
     const r = canvas.getBoundingClientRect();
-    W = r.width; H = r.height;
+    // phones fire resize when the address bar moves; nothing to do if the stage didn't change
     // cap the pixel count so big retina screens stay smooth
-    dpr = quality > 0 ? 1 : Math.min(window.devicePixelRatio || 1, 2, Math.sqrt(4.2e6 / (W * H)));
+    const nextDpr = quality > 0 ? 1 : Math.min(window.devicePixelRatio || 1, 2, Math.sqrt(4.2e6 / (r.width * r.height)));
+    if (r.width === W && r.height === H && nextDpr === dpr && canvas.width) return;
+    W = r.width; H = r.height; dpr = nextDpr;
     canvas.width = Math.round(W * dpr);
     canvas.height = Math.round(H * dpr);
 
@@ -194,10 +196,23 @@
   const clamp01 = v => Math.min(1, Math.max(0, v));
   const ease = t => t * t * (3 - 2 * t);
 
+  const stage = document.querySelector('.stage');
+  const gallery = document.querySelector('#gallery');
   function readScroll() {
     const r = journey.getBoundingClientRect();
-    const total = r.height - window.innerHeight;
+    const total = r.height - stage.offsetHeight; // the scroll distance while the stage is pinned
     target = total > 0 ? clamp01(-r.top / total) : 0;
+  }
+
+  // Reaching the end of the path carries you on into the light and down to the gallery
+  let carried = false, lastTarget = 0;
+  function carryToGallery() {
+    if (target >= CONFIG.walkShare && target > lastTarget && !carried) {
+      carried = true;
+      window.scrollTo({ top: gallery.getBoundingClientRect().top + window.scrollY, behavior: 'smooth' });
+    }
+    if (target < CONFIG.walkShare - 0.05) carried = false; // walking back resets it
+    lastTarget = target;
   }
 
   /* ---------- ground (perspective floor) ---------- */
@@ -332,7 +347,7 @@
   }
   const kick = () => { if (!raf) raf = requestAnimationFrame(tick); };
 
-  function onScroll() { readScroll(); kick(); }
+  function onScroll() { readScroll(); carryToGallery(); kick(); }
   function onResize() { layout(); readScroll(); render(current); }
 
   // Backdrop + ground first, then the cut-outs
