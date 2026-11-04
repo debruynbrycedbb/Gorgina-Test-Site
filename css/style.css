@@ -1,5 +1,5 @@
 /* ==========================================================
-   Gorgina — scroll-walk prototype
+   Georgina Marrison — scroll-walk prototype
    Palette pulled from the painting: bark ink, ember, cream light
    ========================================================== */
 :root {
@@ -58,7 +58,10 @@ a { color: inherit; }
   pointer-events: none;
 }
 .site-header a { pointer-events: auto; text-decoration: none; text-shadow: 0 1px 12px rgba(40, 18, 4, .45); }
-.wordmark { font: italic 400 var(--step-2)/1 var(--serif); letter-spacing: .01em; }
+.wordmark {
+  font: italic 400 clamp(1.3rem, 5.4vw, var(--step-2))/1 var(--serif); letter-spacing: .01em;
+  white-space: nowrap;
+}
 .header-link {
   font-size: var(--step--1); font-weight: 600; letter-spacing: .14em; text-transform: uppercase;
 }

@@ -1,4 +1,4 @@
-# Gorgina — scroll-walk prototype
+# Georgina Marrison — scroll-walk prototype
 
 Scroll to walk down a painted autumn path. Trees and bushes pass the camera as 2D cut-outs, the path ends in golden light, and the light opens onto a photo gallery.
 
